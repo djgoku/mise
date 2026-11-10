@@ -514,11 +514,22 @@ pub async fn generate(
             })
             .and_then(|actual| {
                 let backend = actual.backend().ok()?;
-                (platform.to_key() == backend.get_platform_key())
-                    .then(|| actual.lock_platforms.get(&platform.to_key()).cloned())
-                    .flatten()
+                let key = platform.to_key();
+                if key != backend.get_platform_key() {
+                    return None;
+                }
+                let info = actual.lock_platforms.get(&key).cloned()?;
+                // The install's conda_deps name these packages; without them the
+                // lockfile references dependencies it does not record.
+                let conda: BTreeMap<_, _> = actual
+                    .conda_packages
+                    .iter()
+                    .filter(|((platform, _), _)| *platform == key)
+                    .map(|((_, basename), package)| (basename.clone(), package.clone()))
+                    .collect();
+                Some((info, conda))
             })
-            .filter(|info| {
+            .filter(|(info, _)| {
                 info.url.is_some() || info.install.is_some() || info.conda_deps.is_some()
             });
         let previous_info = previous.tools_for(&ba.short).and_then(|entries| {
@@ -565,7 +576,7 @@ pub async fn generate(
         let semaphore = semaphore.clone();
         tasks.spawn(async move {
             let _permit = semaphore.acquire().await?;
-            let mut resolution = if let Some(info) = actual {
+            let mut resolution = if let Some((info, conda)) = actual {
                 (
                     crate::toolset::install_state::state_short(&ba.short).into_owned(),
                     tv.version.clone(),
@@ -573,7 +584,7 @@ pub async fn generate(
                     platform,
                     Ok(info),
                     options,
-                    BTreeMap::new(),
+                    conda,
                     LockResolutionStatus::Optional,
                 )
             } else {
